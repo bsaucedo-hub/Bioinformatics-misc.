@@ -1,0 +1,251 @@
+---
+title: "RNA Sequencing Part 3 Notebook"
+output: html_notebook
+---
+
+```{r}
+#installation of Seurat, and loading of the library
+
+#install.packages('Seurat')
+#library(Seurat)
+
+```
+
+
+```{r}
+#installation of additional packages that can improve the function of Seurat
+#setRepositories(ind = 1:3, addURLs = c('https://satijalab.r-universe.dev', 'https://bnprks.r-universe.dev/'))
+#install.packages(c("BPCells", "presto", "glmGamPoi"))
+```
+
+
+```{r}
+#installation of more packages, used in the Seurat vignettes, also increasing Seurat efficiency
+
+#if (!requireNamespace("remotes", quietly = TRUE)) {
+  #install.packages("remotes")
+#}
+#install.packages('Signac')
+#remotes::install_github("satijalab/seurat-data", quiet = TRUE)
+#remotes::install_github("satijalab/azimuth", quiet = TRUE)
+#remotes::install_github("satijalab/seurat-wrappers", quiet = TRUE)
+```
+
+
+```{r}
+#load libraries
+library(dplyr)
+library(Seurat)
+library(patchwork)
+
+# Load the PBMC dataset
+pbmc.data <- Read10X(data.dir = "C:/Users/Barba/Downloads/pbmc3k_filtered_gene_bc_matrices/filtered_gene_bc_matrices/hg19")
+
+# Initialize the Seurat object with the raw (non-normalized data).
+pbmc <- CreateSeuratObject(counts = pbmc.data, project = "pbmc3k", min.cells = 3, min.features = 200)
+
+pbmc #displays the  Seurat object
+
+#single-cell RNA-seq data is read for PBMCs as a matrix and create a Seurat object to store and analyze the data. The data is loaded from the specified directory, then initialized into a Seurat object with basic filtering.
+
+```
+
+```{r}
+# Lets examine a few genes in the first thirty cells
+
+pbmc.data[c("CD3D", "TCL1A", "MS4A1"), 1:30]
+
+dense.size <- object.size(as.matrix(pbmc.data))
+dense.size
+
+sparse.size <- object.size(pbmc.data)
+sparse.size
+
+dense.size/sparse.size
+
+#examining gene expression for a few genes in the first 30 cells and comparing memory usage between sparse and dense matrix formats
+
+```
+
+
+```{r}
+#QC and selecting cells for further analysis
+
+# The [[ operator can add columns to object metadata. This is a great place to stash QC stats
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+
+# Show QC metrics for the first 5 cells
+head(pbmc@meta.data, 5)
+
+# Adding the mitochondrial gene percentage to metadata for quality control, and preview QC metrics for the first 5 cells
+
+# Visualize QC metrics as a violin plot
+VlnPlot(pbmc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+# FeatureScatter is typically used to visualize feature-feature relationships, but can be used
+# for anything calculated by the object, i.e. columns in object metadata, PC scores etc.
+
+plot1 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+
+pbmc <- subset(pbmc, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+# Visualize QC metrics and relationships between features, then filter out low-quality cells based on gene count and mitochondrial content
+
+```
+
+
+```{r}
+# Normalizing the data
+pbmc <- NormalizeData(pbmc, normalization.method = "LogNormalize", scale.factor = 10000)
+
+pbmc <- NormalizeData(pbmc)
+
+# Normalize gene expression data using log normalization to prepare for downstream analysis
+```
+
+
+```{r}
+# Identification of highly variable features (feature selection)
+
+pbmc <- FindVariableFeatures(pbmc, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(pbmc), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(pbmc)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+
+# Here you identify and visualize the most variable genes to focus on informative features for downstream analysis
+```
+
+
+```{r}
+# Scaling the data
+
+all.genes <- rownames(pbmc)
+pbmc <- ScaleData(pbmc, features = all.genes)
+
+# Scale and center gene expression data across all genes to prepare for dimensional reduction
+```
+
+
+```{r}
+# Perform linear dimensional reduction
+
+pbmc <- RunPCA(pbmc, features = VariableFeatures(object = pbmc))
+
+# Examine and visualize PCA results a few different ways
+print(pbmc[["pca"]], dims = 1:5, nfeatures = 5)
+
+VizDimLoadings(pbmc, dims = 1:2, reduction = "pca")
+
+DimPlot(pbmc, reduction = "pca") + NoLegend()
+
+DimHeatmap(pbmc, dims = 1, cells = 500, balanced = TRUE)
+
+DimHeatmap(pbmc, dims = 1:15, cells = 500, balanced = TRUE)
+
+# Run PCA for linear dimensional reduction and explore the results through different visualizations
+```
+
+
+```{r}
+# Determine the ‘dimensionality’ of the dataset
+
+ElbowPlot(pbmc)
+
+# An elbow plot is used to determine how many principal components (PCs) capture most of the variation in the data
+```
+
+
+```{r}
+# Cluster the cells
+
+pbmc <- FindNeighbors(pbmc, dims = 1:10) #finds similar cells using the first 10 PCs
+pbmc <- FindClusters(pbmc, resolution = 0.5) #group cells into clusters with a specified resolution
+
+# Look at cluster IDs of the first 5 cells
+head(Idents(pbmc), 5)
+
+# Clusters the cells based on the first 10 principal components and assigns cluster identities
+```
+
+
+```{r}
+# Run non-linear dimensional reduction (UMAP/tSNE)
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+
+# note that you can set `label = TRUE` or use the LabelClusters function to help label
+# individual clusters
+DimPlot(pbmc, reduction = "umap") # Visualize clusters with UMAP
+
+# Make sure the output directory exists
+dir.create("../output", showWarnings = FALSE, recursive = TRUE)
+
+saveRDS(pbmc, file = "../output/pbmc_tutorial.rds") # Save the pbmc object
+
+#Run UMAP to visualize clusters in 2D and sav the Seurat object to easily reload it later
+```
+
+
+```{r}
+#Finding differentially expressed features (cluster biomarkers)
+
+# find all markers of cluster 2
+cluster2.markers <- FindMarkers(pbmc, ident.1 = 2)
+head(cluster2.markers, n = 5)
+
+# find all markers distinguishing cluster 5 from clusters 0 and 3
+cluster5.markers <- FindMarkers(pbmc, ident.1 = 5, ident.2 = c(0, 3))
+head(cluster5.markers, n = 5)
+
+# find markers for every cluster compared to all remaining cells, report only the positive
+# ones
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE)
+pbmc.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+
+cluster0.markers <- FindMarkers(pbmc, ident.1 = 0, logfc.threshold = 0.25, test.use = "roc", only.pos = TRUE)
+
+VlnPlot(pbmc, features = c("MS4A1", "CD79A"))
+
+# you can plot raw counts as well
+VlnPlot(pbmc, features = c("NKG7", "PF4"), slot = "counts", log = TRUE)
+
+FeaturePlot(pbmc, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", "FCGR3A", "LYZ", "PPBP",
+    "CD8A"))
+
+pbmc.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 10) %>%
+    ungroup() -> top10
+DoHeatmap(pbmc, features = top10$gene) + NoLegend()
+
+# Find cluster-specific marker genes (differential expression), visualize key features across clusters, and create a heatmap of top markers
+
+```
+
+
+```{r}
+# Assigning cell type identity to clusters
+new.cluster.ids <- c("Naive CD4 T", "CD14+ Mono", "Memory CD4 T", "B", "CD8 T", "FCGR3A+ Mono",
+    "NK", "DC", "Platelet")
+names(new.cluster.ids) <- levels(pbmc)
+pbmc <- RenameIdents(pbmc, new.cluster.ids)
+DimPlot(pbmc, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+library(ggplot2)
+plot <- DimPlot(pbmc, reduction = "umap", label = TRUE, label.size = 4.5) + xlab("UMAP 1") + ylab("UMAP 2") +
+    theme(axis.title = element_text(size = 18), legend.text = element_text(size = 18)) + guides(colour = guide_legend(override.aes = list(size = 10)))
+ggsave(filename = "../output/images/pbmc3k_umap.jpg", height = 7, width = 12, plot = plot, quality = 50)
+
+saveRDS(pbmc, file = "../output/pbmc3k_final.rds")
+
+# Assign cell type labels to each cluster, visualize them on UMAP, and save the final annotated Seurat object and UMAP plot
+```
