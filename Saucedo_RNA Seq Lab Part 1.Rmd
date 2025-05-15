@@ -1,0 +1,277 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+```{r}
+#install.packages("BiocManager") #installing requred packages from bioconductor
+#BiocManager::install("limma")
+#BiocManager::install("Glimma")
+#BiocManager::install("edgeR")
+#BiocManager::install("Mus.musculus")
+```
+
+```{r}
+library(limma) #loading libraries
+library(Glimma)
+library(edgeR)
+library(Mus.musculus)
+```
+```{r}
+#install.packages("R.utils") #installs R.utils
+url <- "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE63310&format=file" #sets the download URL for GEO dataset GSE63310
+utils::download.file(url, destfile="GSE63310_RAW.tar", mode="wb") #downloads the raw data archive from GEO
+utils::untar("GSE63310_RAW.tar", exdir = ".") #extracts the .tar file to the current directory
+files <- c("GSM1545535_10_6_5_11.txt", "GSM1545536_9_6_5_11.txt", "GSM1545538_purep53.txt",
+  "GSM1545539_JMS8-2.txt", "GSM1545540_JMS8-3.txt", "GSM1545541_JMS8-4.txt",
+  "GSM1545542_JMS8-5.txt", "GSM1545544_JMS9-P7c.txt", "GSM1545545_JMS9-P8c.txt") #this is a list of file names (without the .gz extension)
+for(i in paste(files, ".gz", sep="")) 
+  R.utils::gunzip(i, overwrite=TRUE) #this unzips each .gz file to get the plain .txt files
+```
+```{r}
+files <- c("GSM1545535_10_6_5_11.txt", "GSM1545536_9_6_5_11.txt", 
+   "GSM1545538_purep53.txt", "GSM1545539_JMS8-2.txt", 
+   "GSM1545540_JMS8-3.txt", "GSM1545541_JMS8-4.txt", 
+   "GSM1545542_JMS8-5.txt", "GSM1545544_JMS9-P7c.txt", 
+   "GSM1545545_JMS9-P8c.txt") #redefines the list of uncompressed file names
+read.delim(files[1], nrow=5) #reads the first 5 rows of the first file to examine its structure
+```
+```{r}
+x <- readDGE(files, columns=c(1,3)) #this reads count data from each file, using column 1 (gene ID) and column 3 (counts)
+class(x) #checks and shows the class of the object, which should be "DGEList"
+```
+
+
+```{r}
+dim(x) #displays the dimensions of the count matrix: number of genes (rows) × number of samples (columns)
+```
+```{r}
+samplenames <- substring(colnames(x), 12, nchar(colnames(x))) #extracts simplified sample names by removing the first 11 characters from each column name
+samplenames #displays the cleaned-up sample names
+```
+
+```{r}
+colnames(x) <- samplenames #renames the columns of the count matrix to samplenames
+group <- as.factor(c("LP", "ML", "Basal", "Basal", "ML", "LP", 
+                     "Basal", "ML", "LP")) #creates a factor vector defining the group (cell type) for each sample
+x$samples$group <- group #adds the group information to the sample metadata in the DGEList object
+lane <- as.factor(rep(c("L004","L006","L008"), c(3,4,2))) #creates a factor for sequencing lanes, assigning 3 samples to L004, 4 to L006, and 2 to L008
+x$samples$lane <- lane #adds the lane information to the sample metadata in the DGEList object
+x$samples #shows the sample metadata including group and lane info
+```
+
+```{r}
+#4.3 Organising gene annotations
+geneid <- rownames(x) #extracts gene IDs (ENTREZ IDs) from the rows of the count matrix
+genes <- select(Mus.musculus, keys=geneid, columns=c("SYMBOL", "TXCHROM"), 
+                keytype="ENTREZID") #retrieves gene symbols and chromosome info for each gene ID using the Mus.musculus annotation package
+head(genes) #displays the first few rows of the gene annotation data
+
+genes <- genes[!duplicated(genes$ENTREZID),] #removes any duplicate gene entries based on the ENTREZID
+
+x$genes <- genes #adds the cleaned gene annotation data to the DGEList object
+x #Displays the updated DGEList object, now containing count data, sample metadata, and gene annotations
+
+```
+
+```{r}
+#5 Data pre-processing
+#5.1 Transformations from raw-scale
+
+cpm <- cpm(x) #calculates counts per million (CPM) for each gene in each sample
+lcpm <- cpm(x, log=TRUE) #calculates log2-transformed CPM values for each gene in each sample
+
+L <- mean(x$samples$lib.size) * 1e-6 #computes the average library size in millions
+M <- median(x$samples$lib.size) * 1e-6 #computes the median library size in millions
+c(L, M) #Displays the average and median library sizes
+
+summary(lcpm) #shows a summary of statistics (min, max, median, etc.) for the log-CPM values across all genes and samples
+```
+
+```{r}
+#5.2 Removing genes that are lowly expressed
+table(rowSums(x$counts==0)==9) #counts how many genes have zero counts in all 9 samples, this helps assess how many unexpressed genes exist
+
+keep.exprs <- filterByExpr(x, group=group) #identifies genes with sufficient expression for analysis, accounting for the experimental groups
+x <- x[keep.exprs,, keep.lib.sizes=FALSE] #filters out low-expression genes and updates the DGEList object without preserving old library sizes
+dim(x) #displays dimensions of the filtered dataset (remaining genes × samples)
+
+lcpm.cutoff <- log2(10/M + 2/L) #calculates a log-CPM threshold to visualize filtering; based on median and mean library sizes
+library(RColorBrewer) #loads the RColorBrewer package for color palettes
+nsamples <- ncol(x) #gets the number of samples
+col <- brewer.pal(nsamples, "Paired") #assigns a unique color to each sample using the "Paired" color palette
+par(mfrow=c(1,2)) #splits the plotting area into 1 row and 2 columns for side-by-side plots
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="") #density plot of log-CPM values for sample 1
+title(main="A. Raw data", xlab="Log-cpm") #adds plot title and x-axis label
+abline(v=lcpm.cutoff, lty=3) #draws a vertical line at the log-CPM cutoff
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+} #loops through remaining samples and adds their densities to the plot
+legend("topright", samplenames, text.col=col, bty="n") #adds a color-coded legend for the samples
+lcpm <- cpm(x, log=TRUE) #recomputes log-CPM values after filtering low-expressed genes
+plot(density(lcpm[,1]), col=col[1], lwd=2, ylim=c(0,0.26), las=2, main="", xlab="") #density plot of log-CPM values for sample 1 (post-filtering)
+title(main="B. Filtered data", xlab="Log-cpm") #adds plot title and x-axis label
+abline(v=lcpm.cutoff, lty=3) #draws the same cutoff line as before
+for (i in 2:nsamples){
+den <- density(lcpm[,i])
+lines(den$x, den$y, col=col[i], lwd=2)
+} #loops through and adds density curves for the rest of the samples
+legend("topright", samplenames, text.col=col, bty="n") #adds the legend again for filtered data
+```
+
+```{r}
+#5.3 Normalising gene expression distributions
+
+x <- calcNormFactors(x, method = "TMM") #applies TMM normalization to adjust for library size and composition differences
+x$samples$norm.factors #displays the calculated normalization factors for each sample
+
+x2 <- x #creates a copy of the DGEList object for demonstration purposes (to simulate unnormalized vs. normalized data)
+x2$samples$norm.factors <- 1 #resets normalization factors to 1 to mimic unnormalized data
+x2$counts[,1] <- ceiling(x2$counts[,1]*0.05) #artificially reduces counts in sample 1
+x2$counts[,2] <- x2$counts[,2]*5 #artificially inflates counts in sample 2
+
+par(mfrow=c(1,2)) #sets up a side-by-side plotting area for comparing boxplots
+lcpm <- cpm(x2, log=TRUE) #calculates log-CPM for the manipulated (unnormalized) data
+boxplot(lcpm, las=2, col=col, main="") #creates a boxplot of unnormalized log-CPM values across all samples
+title(main="A. Example: Unnormalised data",ylab="Log-cpm") #adds a title and y-axis label
+x2 <- calcNormFactors(x2) #reapplies TMM normalization to the manipulated data to correct for artificial biases
+x2$samples$norm.factors #displays the new normalization factors
+
+lcpm <- cpm(x2, log=TRUE) #recalculates log-CPM after normalization
+boxplot(lcpm, las=2, col=col, main="") #plots normalized log-CPM values to compare with unnormalized version
+title(main="B. Example: Normalised data",ylab="Log-cpm") #adds a title and y-axis label
+```
+
+
+```{r}
+#5.4 Unsupervised clustering of samples
+
+lcpm <- cpm(x, log=TRUE) #computes log-CPM values from the normalized, filtered count data for MDS plotting
+par(mfrow=c(1,2)) #sets up the plotting area for two side-by-side plots
+col.group <- group #copies the group factor for coloring
+levels(col.group) <-  brewer.pal(nlevels(col.group), "Set1") #assigns a distinct color to each group using Set1 palette
+col.group <- as.character(col.group) #converts factor to character so colors are usable in plotting
+#assigning colors to sequencing lanes for plotting
+col.lane <- lane #copies the lane factor
+levels(col.lane) <-  brewer.pal(nlevels(col.lane), "Set2") #assigns colors to lanes using Set2 palette
+col.lane <- as.character(col.lane) #converts factor to character for plotting
+plotMDS(lcpm, labels=group, col=col.group) #creates an MDS plot (2D) showing sample similarities, colored by biological group
+title(main="A. Sample groups") #adds a plot title
+plotMDS(lcpm, labels=lane, col=col.lane, dim=c(3,4)) #creates an MDS plot using dimensions 3 and 4, colored by sequencing lane
+title(main="B. Sequencing lanes") #adds a title to the second plot
+
+glMDSPlot(lcpm, labels=paste(group, lane, sep="_"), 
+          groups=x$samples[,c(2,5)], launch=FALSE) #generates an interactive multidimensional scaling plot in the Viewer pane, labeled by group and lane
+```
+
+```{r}
+#6 Differential expression analysis
+#6.1 Creating a design matrix and contrasts
+
+design <- model.matrix(~0+group+lane) #creates a design matrix without an intercept, modeling the effects of group and sequencing lane
+colnames(design) <- gsub("group", "", colnames(design)) #cleans up column names by removing the "group" prefix for readability
+design #displays the final design matrix
+
+contr.matrix <- makeContrasts(
+   BasalvsLP = Basal-LP, 
+   BasalvsML = Basal - ML, 
+   LPvsML = LP - ML, 
+   levels = colnames(design)) #defines a contrast comparing Basal vs. LP, Basal vs. ML, LP vs. ML, and specifies which levels (columns) of the design matrix to use
+contr.matrix #displays the contrast matrix
+```
+
+```{r}
+#6.2 Removing heteroscedascity from count data
+
+par(mfrow=c(1,2)) #sets up the plotting area for two side-by-side plots
+v <- voom(x, design, plot=TRUE) #applies the voom transformation to the count data, modeling the mean-variance relationship and generating a diagnostic plot
+v #displays the resulting voom-transformed object
+
+vfit <- lmFit(v, design) #fits a linear model to the voom-transformed data using the design matrix
+vfit <- contrasts.fit(vfit, contrasts=contr.matrix) #applies the contrast matrix to specify the comparisons of interest
+efit <- eBayes(vfit) #applies empirical Bayes moderation to improve variance estimates
+plotSA(efit, main="Final model: Mean-variance trend") #plots the mean-variance trend from the final fitted model — a key voom diagnostic
+
+```
+
+```{r}
+#6.4 Examing the number of DE genes
+
+summary(decideTests(efit)) #summarizes the number of significantly up- and down-regulated genes for each contrast using the default eBayes results
+
+tfit <- treat(vfit, lfc=1) #applies a fold-change threshold (log2FC ≥ 1) to focus on genes with biologically meaningful changes
+dt <- decideTests(tfit) #determines differential expression status (up/down/none) based on the treat results
+summary(dt) #summarizes the number of DE genes for each contrast with the fold-change threshold applied
+
+de.common <- which(dt[,1]!=0 & dt[,2]!=0) #identifies genes significantly differentially expressed in both contrast 1 and 2
+length(de.common) #returns the number of common DE genes between those two contrasts
+
+head(tfit$genes$SYMBOL[de.common], n=20) #displays the gene symbols of the first 20 DE genes shared by both contrasts
+
+vennDiagram(dt[,1:2], circle.col=c("turquoise", "salmon")) #draws a Venn diagram showing the overlap in DE genes between the first two contrasts
+
+write.fit(tfit, dt, file="results.txt") #writes the full differential expression results to a text file named "results.txt"
+```
+
+```{r}
+#6.5 Examing individual DE genes from top to bottom
+
+basal.vs.lp <- topTreat(tfit, coef=1, n=Inf) #extracts all DE results for the first contrast (Basal vs LP), sorted by adjusted p-value
+basal.vs.ml <- topTreat(tfit, coef=2, n=Inf) #extracts all DE results for the second contrast (Basal vs ML), sorted by adjusted p-value
+head(basal.vs.lp) #displays the top DE genes for the Basal vs LP comparison
+
+head(basal.vs.ml) #displays the top DE genes for the Basal vs ML comparison
+
+```
+
+```{r}
+#6.6 Useful graphical representations of different expression results
+plotMD(tfit, column=1, status=dt[,1], main=colnames(tfit)[1], 
+       xlim=c(-8,13)) #creates a mean-difference (MD) plot for the first contrast and highlights significantly differentially expressed genes based on `dt`. It also helps visualize the relationship between log-fold change and expression level
+
+glMDPlot(tfit, coef=1, status=dt, main=colnames(tfit)[1],
+         side.main="ENTREZID", counts=lcpm, groups=group, launch=FALSE) #generates an interactive MD plot for the first contrast using Glimma and includes expression values and gene annotation. This is useful for interactive exploration of DE genes (does not launch in browser)
+
+library(gplots) #loads the gplots package for advanced plotting functions like heatmaps
+basal.vs.lp.topgenes <- basal.vs.lp$ENTREZID[1:100] #selects the top 100 DE genes from the Basal vs LP comparison by ENTREZID
+i <- which(v$genes$ENTREZID %in% basal.vs.lp.topgenes) #finds the row indices in `v$genes` that match those top genes
+mycol <- colorpanel(1000,"blue","white","red") #creates a custom color gradient for the heatmap from blue (low) to red (high)
+#heatmap.2(lcpm[i,], scale="row",
+   #labRow=v$genes$SYMBOL[i], labCol=group, 
+   #col=mycol, trace="none", density.info="none", 
+   #margin=c(8,6), lhei=c(2,10), dendrogram="column") #getting an error in plot message: figures are too large. ##draws a heatmap of the top 100 DE genes across all samples. The rows are scaled to emphasize expression patterns, columns are labeled by sample group; rows by gene symbol and dendrogram groups columns (samples) by similarity in expression
+
+```
+
+```{r}
+#7 Gene set testing with camera
+
+#load(system.file("extdata", "mouse_c2_v5p1.rda", package = "RNAseq123")) #loads a curated mouse gene set collection (MSigDB C2) from the RNAseq123 package. These gene sets are used for gene set enrichment analysis (GSEA)
+#idx <- ids2indices(Mm.c2,id=rownames(v)) #converts gene set definitions to indices corresponding to genes present in the dataset (`v`) and only retains genes that are in both the dataset and the gene sets
+#cam.BasalvsLP <- camera(v,idx,design,contrast=contr.matrix[,1])
+#head(cam.BasalvsLP,5) #runs competitive gene set testing (CAMERA) for the Basal vs LP contrast, identifies gene sets enriched in DE results and displays the top 5 enriched sets
+
+#cam.BasalvsML <- camera(v,idx,design,contrast=contr.matrix[,2])
+#head(cam.BasalvsML,5) #CAMERA test for Basal vs ML contrast
+
+#cam.LPvsML <- camera(v,idx,design,contrast=contr.matrix[,3])
+#head(cam.LPvsML,5) #CAMERA test for LP vs ML contrast
+
+#barcodeplot(efit$t[,3], index=idx$LIM_MAMMARY_LUMINAL_MATURE_UP, 
+            #index2=idx$LIM_MAMMARY_LUMINAL_MATURE_DN, main="LPvsML") #plots the distribution of genes from a specific gene set along the ranked gene list (LP vs ML). This is useful for visualizing gene set enrichment and directional regulation (up vs down)
+```
+
+```{r}
+#8 Software and code used
+sessionInfo() #displays detailed information about the R session, including R version, loaded packages (with versions), and system environment. This is useful for documenting software versions to ensure reproducibility of the RNA-seq analysis
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
